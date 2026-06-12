@@ -1,0 +1,231 @@
+// TikTok Worker - FULLY FIXED WITH STATS
+export default {
+  async fetch(request) {
+    const url = new URL(request.url);
+    
+    if (url.pathname !== '/tik/dl') {
+      return new Response('✅ TikTok API Worker is running', { status: 200 });
+    }
+    
+    const tiktokUrl = url.searchParams.get('url');
+    
+    if (!tiktokUrl) {
+      return new Response(JSON.stringify({ 
+        success: false, 
+        error: "Missing url parameter" 
+      }), {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+    
+    try {
+      let videoUrl = null;
+      let author = "TikTok User";
+      let caption = "";
+      let likes = "0";
+      let views = "0";
+      let comments = "0";
+      let shares = "0";
+      let duration = "0:00";
+      
+      // ========== SOURCE 1: ssstik.io (Best for stats) ==========
+      try {
+        const ssstikForm = new URLSearchParams();
+        ssstikForm.append('url', tiktokUrl);
+        ssstikForm.append('format', 'mp4');
+        
+        const ssstikRes = await fetch('https://ssstik.io/abc?url=dl', {
+          method: 'POST',
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Accept': 'application/json'
+          },
+          body: ssstikForm
+        });
+        
+        const ssstikText = await ssstikText.text();
+        
+        // Extract video URL
+        const videoMatch = ssstikText.match(/https:\/\/[^"'\s]+\.mp4[^"'\s]*/);
+        if (videoMatch && !videoUrl) videoUrl = videoMatch[0];
+        
+        // Extract stats from HTML
+        const statsMatch = ssstikText.match(/(\d+(?:\.\d+)?[KMB]?)\s*(?:Views|Likes|Comments|Shares)/gi);
+        if (statsMatch) {
+          for (let stat of statsMatch) {
+            if (stat.toLowerCase().includes('view')) views = stat.replace(/views/i, '').trim();
+            if (stat.toLowerCase().includes('like')) likes = stat.replace(/likes/i, '').trim();
+            if (stat.toLowerCase().includes('comment')) comments = stat.replace(/comments/i, '').trim();
+            if (stat.toLowerCase().includes('share')) shares = stat.replace(/shares/i, '').trim();
+          }
+        }
+      } catch(e) { console.log('ssstik error:', e); }
+      
+      // ========== SOURCE 2: tikmate.app (Video + basic stats) ==========
+      const tikmateUrl = `https://api.tikmate.app/api/lookup?url=${encodeURIComponent(tiktokUrl)}`;
+      const tikmateRes = await fetch(tikmateUrl, {
+        headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' }
+      });
+      
+      if (tikmateRes.ok) {
+        const tikmateData = await tikmateRes.json();
+        console.log('Tikmate data:', JSON.stringify(tikmateData));
+        
+        if (tikmateData.video_id && !videoUrl) {
+          videoUrl = `https://tikmate.app/download/${tikmateData.video_id}/mp4/720p/1`;
+        }
+        if (tikmateData.likes && likes === "0") likes = tikmateData.likes.toString();
+        if (tikmateData.views && views === "0") views = tikmateData.views.toString();
+        if (tikmateData.duration && duration === "0:00") duration = tikmateData.duration;
+      }
+      
+      // ========== SOURCE 3: oEmbed (Author & Caption) ==========
+      const embedUrl = `https://www.tiktok.com/oembed?url=${encodeURIComponent(tiktokUrl)}`;
+      const embedRes = await fetch(embedUrl, {
+        headers: { 'User-Agent': 'Mozilla/5.0' }
+      });
+      
+      if (embedRes.ok) {
+        const embedData = await embedRes.json();
+        if (embedData.author_name) author = embedData.author_name;
+        if (embedData.title) caption = embedData.title;
+      }
+      
+      // ========== SOURCE 4: tikdownloader.io (Comments & Shares) ==========
+      const formData = new URLSearchParams();
+      formData.append('q', tiktokUrl);
+      formData.append('lang', 'en');
+      
+      const apiRes = await fetch('https://tikdownloader.io/api/ajaxSearch', {
+        method: 'POST',
+        headers: {
+          'User-Agent': 'Mozilla/5.0',
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: formData
+      });
+      
+      const apiData = await apiRes.json();
+      if (apiData.status === 'ok') {
+        const html = apiData.data;
+        
+        // Extract video URL if not already got
+        if (!videoUrl) {
+          const match = html.match(/https:\/\/dl\.snapcdn\.app\/get\?token=[^"'\s]+/);
+          if (match) videoUrl = match[0];
+        }
+        
+        // Extract comments
+        const commentMatch = html.match(/(\d+(?:,\d+)*(?:\.\d+)?[KMB]?)\s*comments/i);
+        if (commentMatch && comments === "0") comments = commentMatch[1];
+        
+        // Extract shares
+        const shareMatch = html.match(/(\d+(?:,\d+)*(?:\.\d+)?[KMB]?)\s*shares/i);
+        if (shareMatch && shares === "0") shares = shareMatch[1];
+        
+        // Extract likes
+        if (likes === "0") {
+          const likeMatch = html.match(/(\d+(?:,\d+)*(?:\.\d+)?[KMB]?)\s*likes/i);
+          if (likeMatch) likes = likeMatch[1];
+        }
+        
+        // Extract views
+        if (views === "0") {
+          const viewMatch = html.match(/(\d+(?:,\d+)*(?:\.\d+)?[KMB]?)\s*views/i);
+          if (viewMatch) views = viewMatch[1];
+        }
+        
+        // Extract duration
+        if (duration === "0:00") {
+          const durationMatch = html.match(/(\d{1,2}:\d{2})/);
+          if (durationMatch) duration = durationMatch[1];
+        }
+      }
+      
+      // ========== SOURCE 5: Direct TikTok API Fallback ==========
+      if (views === "0" || likes === "0") {
+        try {
+          const videoId = extractVideoId(tiktokUrl);
+          if (videoId) {
+            const tiktokApiRes = await fetch(`https://www.tiktok.com/node/share/video/${videoId}`, {
+              headers: { 'User-Agent': 'Mozilla/5.0' }
+            });
+            if (tiktokApiRes.ok) {
+              const tiktokData = await tiktokApiRes.json();
+              if (tiktokData.stats) {
+                if (views === "0") views = tiktokData.stats.playCount || "0";
+                if (likes === "0") likes = tiktokData.stats.diggCount || "0";
+                if (comments === "0") comments = tiktokData.stats.commentCount || "0";
+                if (shares === "0") shares = tiktokData.stats.shareCount || "0";
+              }
+            }
+          }
+        } catch(e) { console.log('Direct API error:', e); }
+      }
+      
+      if (!videoUrl) {
+        throw new Error("Could not get video URL");
+      }
+      
+      // Format numbers with K/M/B
+      function formatStat(value) {
+        if (!value || value === "0") return "0";
+        if (typeof value === 'number') value = value.toString();
+        return value;
+      }
+      
+      // Convert duration format (mm:ss to seconds if needed)
+      function formatDuration(dur) {
+        if (!dur || dur === "0:00") return "0:00";
+        if (dur.includes(':')) return dur;
+        const seconds = parseInt(dur);
+        if (isNaN(seconds)) return "0:00";
+        const mins = Math.floor(seconds / 60);
+        const secs = seconds % 60;
+        return `${mins}:${secs.toString().padStart(2, '0')}`;
+      }
+      
+      return new Response(JSON.stringify({
+        success: true,
+        video_url: videoUrl,
+        author: author,
+        caption: caption,
+        stats: {
+          views: formatStat(views),
+          likes: formatStat(likes),
+          comments: formatStat(comments),
+          shares: formatStat(shares)
+        },
+        duration: formatDuration(duration),
+        links: [{ url: videoUrl, filename: `${author.replace(/\s/g, '_')}_tiktok.mp4` }]
+      }), {
+        headers: { 'Content-Type': 'application/json' }
+      });
+      
+    } catch (error) {
+      console.error('Worker error:', error);
+      return new Response(JSON.stringify({
+        success: false,
+        error: error.message
+      }), {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+  }
+};
+
+// Helper function to extract video ID from TikTok URL
+function extractVideoId(url) {
+  const patterns = [
+    /\/video\/(\d+)/,
+    /\/v\/(\d+)/,
+    /tiktok\.com\/@[\w.]+\/video\/(\d+)/,
+    /tiktok\.com\/@[\w.]+\/v\/(\d+)/
+  ];
+  for (let pattern of patterns) {
+    const match = url.match(pattern);
+    if (match) return match[1];
+  }
+  return null;
+}
